@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="description" content="Lunar Lander — pilot your lander onto the moon's lit pads. Real physics, limited fuel, precision touchdowns. Free single-file HTML5 game.">
+<title>Lunar Lander · Moon Touchdown</title>
+<script>
+// 平台 SDK 按域名条件加载（独立运行时完全不加载，游戏行为不变）
+(function () {
+  var host = location.hostname || "";
+  try {
+    if (host.indexOf("crazygames") !== -1) {
+      var s1 = document.createElement("script");
+      s1.src = "https://sdk.crazygames.com/crazygames-sdk-v3.js";
+      s1.onload = function () {
+        if (window.CrazyGames && window.CrazyGames.SDK) {
+          window.CrazyGames.SDK.init().then(function () {
+            try { window.CrazyGames.SDK.game.loadingStart(); } catch (e) {}
+            window.addEventListener("load", function () { try { window.CrazyGames.SDK.game.loadingStop(); } catch (e) {} });
+          }).catch(function () {});
+        }
+      };
+      document.head.appendChild(s1);
+      window.__portal = "crazygames";
+    } else if (host.indexOf("gamedistribution") !== -1 || host.indexOf("html5.gamedistribution.com") !== -1 || host.indexOf("gd.games") !== -1) {
+      var s2 = document.createElement("script");
+      s2.src = "https://sdk.gamedistribution.com/v2/main.min.js";
+      document.head.appendChild(s2);
+      window.__portal = "gamedistribution";
+    }
+  } catch (e) {}
+})();
+</script>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { height:100%; overflow:hidden; background:#05060f; font-family:-apple-system,"Helvetica Neue",Arial,sans-serif; }
+  #game { position:fixed; inset:0; display:block; touch-action:none; }
+  #muteBtn { position:fixed; top:10px; right:10px; z-index:6; background:rgba(20,24,40,.75); color:#aeb8d0;
+    border:1px solid #333a52; border-radius:10px; padding:7px 10px; font-size:11px; font-weight:700; letter-spacing:1px; cursor:pointer; }
+  #touchUI { position:fixed; inset:0; pointer-events:none; z-index:4; }
+  .tbtn { pointer-events:auto; position:fixed; width:64px; height:64px; border-radius:50%;
+    background:rgba(28,33,54,.55); border:1px solid rgba(140,155,190,.45); color:#dfe6ff; font-size:22px;
+    display:flex; align-items:center; justify-content:center; user-select:none; -webkit-user-select:none; }
+  #btnLeft { left:18px; bottom:24px; }
+  #btnRight { left:96px; bottom:24px; }
+  #btnThrust { right:18px; bottom:24px; width:86px; height:86px; font-size:26px; font-weight:800;
+    background:rgba(64,36,28,.55); border-color:rgba(255,138,61,.55); color:#ffd7ae; }
+  .tbtn.on { background:rgba(90,110,180,.7); }
+  #btnThrust.on { background:rgba(200,90,40,.75); }
+  #overlay { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    background:rgba(4,6,14,.72); z-index:8; }
+  #panel { background:#141830; border:1px solid #2e3554; border-radius:18px; padding:26px 34px; text-align:center;
+    color:#fff; max-width:88vw; box-shadow:0 18px 60px rgba(0,0,0,.6); }
+  #panel h2 { font-size:24px; letter-spacing:2px; margin-bottom:8px; color:#eaf2ff; }
+  #ovText { color:#9aa6c8; font-size:13px; line-height:1.55; margin-bottom:12px; }
+  #ovStats { white-space:pre-line; font-family:'Courier New',monospace; font-size:13px; color:#cdd8f2;
+    text-align:left; display:inline-block; margin-bottom:10px; line-height:1.7; }
+  #finalScore { font-size:30px; font-weight:900; color:#ffd76a; margin-bottom:16px; }
+  #mainBtn { background:linear-gradient(135deg,#3f8cff,#7b5bff); color:#fff; border:none; border-radius:12px;
+    padding:12px 34px; font-size:15px; font-weight:800; letter-spacing:1px; cursor:pointer; }
+  #mainBtn:active { transform:scale(.97); }
+  #footer { position:fixed; bottom:6px; left:0; right:0; text-align:center; color:#4a5270; font-size:11px; z-index:3; pointer-events:none; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<button id="muteBtn">SOUND ON</button>
+<div id="touchUI">
+  <div class="tbtn" id="btnLeft">&#9664;</div>
+  <div class="tbtn" id="btnRight">&#9654;</div>
+  <div class="tbtn" id="btnThrust">&#9650;</div>
+</div>
+<div id="overlay"><div id="panel">
+  <h2 id="ovTitle">LUNAR LANDER</h2>
+  <p id="ovText"></p>
+  <div id="ovStats"></div>
+  <div id="finalScore"></div>
+  <button id="mainBtn">LAUNCH</button>
+</div></div>
+<div id="footer">Lunar Lander — a free physics game</div>
+<script>
+"use strict";
+/* ================= 纯逻辑函数（可被单测原样抽取） ================= */
+
+// 着陆判定：接触点在着陆区之外由调用方处理，这里只判速度与姿态（严格小于阈值）
+function judgeLanding(vy, hx, tiltDeg) {
+  return Math.abs(vy) < 22 && Math.abs(hx) < 12 && Math.abs(tiltDeg) < 12;
+}
+
+// 关卡缩放：燃料更少、着陆区更窄、初始漂移更快
+function widthFactor(level) {
+  return Math.max(0.55, 1 - 0.08 * (level - 1));
+}
+function fuelForLevel(level) {
+  return Math.max(400, 1000 - 70 * (level - 1));
+}
+function driftForLevel(level) {
+  return Math.min(38, 12 + 5 * (level - 1));
+}
+
+// 地形上某 x 处的高度（折线线性插值，二分查找）
+function terrainYAt(terrain, x) {
+  var pts = terrain.pts, lo = 0, hi = pts.length - 1;
+  if (x <= pts[0].x) return pts[0].y;
+  if (x >= pts[hi].x) return pts[hi].y;
+  while (hi - lo > 1) {
+    var mid = (lo + hi) >> 1;
+    if (pts[mid].x <= x) lo = mid; else hi = mid;
+  }
+  var a = pts[lo], b = pts[hi];
+  return a.y + (b.y - a.y) * ((x - a.x) / (b.x - a.x));
+}
+
+// x 是否在某块着陆区内，返回倍率（0 = 非着陆区）
+function padMultAt(terrain, x) {
+  var pads = terrain.pads;
+  for (var i = 0; i < pads.length; i++) {
+    if (x >= pads[i].x0 && x <= pads[i].x1) return pads[i].mult;
+  }
+  return 0;
+}
+
+// 程序化月面地形：随机游走 + 高原/山谷特征 + 3 块整平着陆区（越窄倍率越高）
+function generateTerrain(level, rand) {
+  rand = rand || Math.random;
+  var W = 2400, MINY = 760, MAXY = 1280, SEG = 20, STEP = W / SEG;
+  var wf = widthFactor(level);
+  var pts = [{ x: 0, y: 620 + rand() * 90 }];
+  var prev = MINY + 100 + rand() * 240;
+  var plateauAt = 4 + Math.floor(rand() * 6);
+  var valleyAt = 11 + Math.floor(rand() * 6);
+  var plateauY = Math.round(Math.max(MINY, Math.min(MAXY, prev + (rand() - 0.5) * 200)));
+  var i, y, k;
+  for (i = 1; i < SEG; i++) {
+    if (i >= plateauAt && i <= plateauAt + 1) y = plateauY;               // 高原
+    else if (i >= valleyAt && i <= valleyAt + 1) y = MAXY - rand() * 90;  // 山谷
+    else {
+      y = prev + (rand() - 0.5) * 300;                                    // 斜坡
+      if (y < MINY) y = MINY + rand() * 60;
+      if (y > MAXY) y = MAXY - rand() * 60;
+    }
+    pts.push({ x: i * STEP, y: Math.round(y) });
+    prev = y;
+  }
+  pts.push({ x: W, y: 620 + rand() * 90 });
+  // 三块着陆区：宽度 300/200/110 × 关卡因子，倍率 2/3/5，随机分配到三个区域（天然不重叠）
+  var bases = [300, 200, 110], mults = [2, 3, 5];
+  var zones = [[0.06, 0.34], [0.36, 0.64], [0.66, 0.94]];
+  var order = [0, 1, 2], tmp;
+  for (i = 2; i > 0; i--) { var j = Math.floor(rand() * (i + 1)); tmp = order[i]; order[i] = order[j]; order[j] = tmp; }
+  var pads = [];
+  for (i = 0; i < bases.length; i++) {
+    var bw = Math.round(bases[i] * wf);
+    var z = zones[order[i]];
+    var cx = Math.round((z[0] + (z[1] - z[0]) * (0.28 + rand() * 0.44)) * W);
+    var x0 = cx - (bw >> 1), x1 = x0 + bw;
+    var py = Math.round(terrainYAt({ pts: pts }, cx));
+    if (py < MINY) py = MINY;
+    if (py > MAXY) py = MAXY;
+    pads.push({ x0: x0, x1: x1, y: py, mult: mults[i] });
+  }
+  // 整平：删除区间内部点并插入精确边界点（严格不等号避免同 x 重复点）
+  for (i = 0; i < pads.length; i++) {
+    var p = pads[i], np = [];
+    for (k = 0; k < pts.length; k++) if (pts[k].x < p.x0 || pts[k].x > p.x1) np.push(pts[k]);
+    np.push({ x: p.x0, y: p.y }, { x: p.x1, y: p.y });
+    np.sort(function (a, b) { return a.x - b.x; });
+    pts = np;
+  }
+  return { w: W, pts: pts, pads: pads };
+}
+
+// 纯物理子步：重力 + 姿态旋转 + 主引擎（沿机头方向），燃料 10/秒
+function stepShip(s, input, dt) {
+  var GRAV = 5.0, THRUST = 14.0, ROT = 100, FUEL_RATE = 10;
+  var out = { x: s.x, y: s.y, vx: s.vx, vy: s.vy, ang: s.ang, fuel: s.fuel, thrusting: false };
+  if (input.left) out.ang -= ROT * dt;
+  if (input.right) out.ang += ROT * dt;
+  if (out.ang < -85) out.ang = -85;
+  if (out.ang > 85) out.ang = 85;
+  out.thrusting = !!input.thrust && out.fuel > 0;
+  if (out.thrusting) {
+    var rad = out.ang * Math.PI / 180;
+    out.vx += Math.sin(rad) * THRUST * dt;
+    out.vy += -Math.cos(rad) * THRUST * dt;
+    out.fuel = Math.max(0, out.fuel - FUEL_RATE * dt);
+  }
+  out.vy += GRAV * dt;
+  out.x += out.vx * dt;
+  out.y += out.vy * dt;
+  return out;
+}
+
+/* ================= 画布与全局状态 ================= */
+var WORLD_W = 2400, WORLD_H = 1500;
+var canvas = document.getElementById("game");
+var ctx = canvas.getContext("2d");
+var dpr = 1, cw = 0, ch = 0, baseScale = 1;
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cw = window.innerWidth; ch = window.innerHeight;
+  canvas.width = Math.round(cw * dpr); canvas.height = Math.round(ch * dpr);
+  canvas.style.width = cw + "px"; canvas.style.height = ch + "px";
+  baseScale = Math.min(cw / WORLD_W, ch / WORLD_H);
+}
+window.addEventListener("resize", resize);
+resize();
+
+var overlay = document.getElementById("overlay");
+var ovTitle = document.getElementById("ovTitle");
+var ovText = document.getElementById("ovText");
+var ovStats = document.getElementById("ovStats");
+var finalScore = document.getElementById("finalScore");
+var mainBtn = document.getElementById("mainBtn");
+var muteBtn = document.getElementById("muteBtn");
+
+var state = "START";   // START | PLAY | SETTLE | OVER
+var score = 0, best = 0, topLv = 0, lives = 5, level = 1;
+var muted = false;
+try { best = parseInt(localStorage.getItem("ll_best") || "0", 10) || 0; } catch (e) {}
+try { topLv = parseInt(localStorage.getItem("ll_top") || "1", 10) || 1; } catch (e) {}
+try { muted = localStorage.getItem("ll_mute") === "1"; } catch (e) {}
+var terrain = null, ship = null, stars = [];
+var parts = [], debris = [];
+var cam = { x: WORLD_W / 2, y: WORLD_H / 2, s: 1 };
+var settleTimer = 0, settleKind = "", settleShown = false, newBestFlag = false;
+var lastLand = null, crashReason = "", fuelWarned = false, shipDead = false;
+
+/* ================= 音效（WebAudio 合成，无外部资源） ================= */
+var AC = null, master = null, engineGain = null, noiseBuf = null;
+function initAudio() {
+  try {
+    if (!AC) {
+      AC = new (window.AudioContext || window.webkitAudioContext)();
+      master = AC.createGain();
+      master.gain.value = muted ? 0 : 0.9;
+      master.connect(AC.destination);
+      var len = AC.sampleRate, buf = AC.createBuffer(1, len, AC.sampleRate), d = buf.getChannelData(0);
+      for (var i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+      noiseBuf = buf;
+      var src = AC.createBufferSource();
+      src.buffer = buf; src.loop = true;
+      var bp = AC.createBiquadFilter();
+      bp.type = "bandpass"; bp.frequency.value = 420; bp.Q.value = 0.7;
+      engineGain = AC.createGain(); engineGain.gain.value = 0;
+      src.connect(bp); bp.connect(engineGain); engineGain.connect(master);
+      src.start();
+    }
+    if (AC.state === "suspended") AC.resume();
+  } catch (e) {}
+}
+function tone(f, at, dur, type, gv) {
+  try {
+    var o = AC.createOscillator(), g = AC.createGain();
+    o.type = type; o.frequency.value = f;
+    g.gain.setValueAtTime(gv, at);
+    g.gain.exponentialRampToValueAtTime(0.001, at + dur);
+    o.connect(g); g.connect(master);
+    o.start(at); o.stop(at + dur);
+  } catch (e) {}
+}
+function beep(f, dur, type, gv) { if (AC) tone(f, AC.currentTime, dur, type || "sine", gv || 0.1); }
+function setEngine(on) {
+  if (!engineGain) return;
+  try {
+    var t = AC.currentTime;
+    engineGain.gain.cancelScheduledValues(t);
+    engineGain.gain.setTargetAtTime(on ? 0.16 + Math.random() * 0.03 : 0, t, 0.06);
+  } catch (e) {}
+}
+function boom() {
+  if (!AC) return;
+  try {
+    var t = AC.currentTime;
+    var src = AC.createBufferSource(); src.buffer = noiseBuf;
+    var lp = AC.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.setValueAtTime(900, t);
+    lp.frequency.exponentialRampToValueAtTime(80, t + 0.8);
+    var g = AC.createGain();
+    g.gain.setValueAtTime(0.6, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.9);
+    src.connect(lp); lp.connect(g); g.connect(master);
+    src.start(t); src.stop(t + 1);
+    var o = AC.createOscillator();
+    o.type = "sine";
+    o.frequency.setValueAtTime(70, t);
+    o.frequency.exponentialRampToValueAtTime(30, t + 0.5);
+    var g2 = AC.createGain();
+    g2.gain.setValueAtTime(0.5, t);
+    g2.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
+    o.connect(g2); g2.connect(master);
+    o.start(t); o.stop(t + 0.6);
+  } catch (e) {}
+}
+function chime() {
+  if (!AC) return;
+  var fs = [523.25, 659.25, 783.99, 1046.5];
+  for (var i = 0; i < fs.length; i++) tone(fs[i], AC.currentTime + i * 0.09, 0.18, "triangle", 0.14);
+}
+function toggleMute() {
+  muted = !muted;
+  try { if (master) master.gain.value = muted ? 0 : 0.9; } catch (e) {}
+  muteBtn.textContent = muted ? "SOUND OFF" : "SOUND ON";
+  try { localStorage.setItem("ll_mute", muted ? "1" : "0"); } catch (e) {}
+}
+
+/* ================= 平台埋点（SDK 已在头部按域名守卫加载） ================= */
+function portalStart() { try { if (window.__portal === "crazygames" && window.CrazyGames && window.CrazyGames.SDK) window.CrazyGames.SDK.game.gameplayStart(); } catch (e) {} }
+function portalStop() { try { if (window.__portal === "crazygames" && window.CrazyGames && window.CrazyGames.SDK) window.CrazyGames.SDK.game.gameplayStop(); } catch (e) {} }
+function portalHappy() { try { if (window.__portal === "crazygames" && window.CrazyGames && window.CrazyGames.SDK) window.CrazyGames.SDK.game.happytime(); } catch (e) {} }
+
+/* ================= 关卡与流程 ================= */
+function makeStars() {
+  stars = [];
+  for (var i = 0; i < 110; i++) stars.push({ x: Math.random() * WORLD_W, y: Math.random() * 640, r: 0.6 + Math.random() * 1.5, ph: Math.random() * 6.283 });
+}
+function spawnShip() {
+  var drift = driftForLevel(level) * (Math.random() < 0.5 ? -1 : 1);
+  ship = { x: WORLD_W * (0.3 + Math.random() * 0.4), y: 80, vx: drift, vy: 0, ang: 0, fuel: fuelForLevel(level), thrusting: false };
+}
+function startLevel(n) {
+  level = n;
+  terrain = generateTerrain(n, Math.random);
+  makeStars();
+  spawnShip();
+  parts = []; debris = [];
+  cam.x = WORLD_W / 2; cam.y = WORLD_H / 2; cam.s = 1;
+  fuelWarned = false; shipDead = false;
+  settleTimer = 0; settleShown = false;
+  hideOverlay();
+  updateCamera(0, true);
+  state = "PLAY";
+  setEngine(false);
+  portalStart();
+}
+function startGame() {
+  score = 0; lives = 5; newBestFlag = false;
+  startLevel(1);
+}
+function mainAction() {
+  initAudio();
+  if (state === "START" || state === "OVER") startGame();
+  else if (state === "SETTLE" && settleShown) {
+    if (settleKind === "land") startLevel(level + 1);
+    else if (lives > 0) startLevel(level);
+    else startGame();
+  }
+}
+
+/* ================= 界面面板 ================= */
+function showOverlay(title, html, stats, final, btn) {
+  ovTitle.textContent = title;
+  ovText.innerHTML = html;
+  ovStats.textContent = stats;
+  finalScore.textContent = final;
+  mainBtn.textContent = btn;
+  overlay.style.display = "flex";
+}
+function hideOverlay() { overlay.style.display = "none"; }
+function showSettle() {
+  settleShown = true;
+  if (settleKind === "land") {
+    var L = lastLand;
+    showOverlay("TOUCHDOWN!",
+      "Fuel bonus + pad bonus banked.<br>Next moon: less fuel, narrower pads, faster drift.",
+      "PAD \u00d7" + L.mult + " BONUS   +" + L.padBonus + "\nFUEL " + Math.round(L.fuel) + " \u00d7 2    +" + L.fuelBonus + "\nTOTAL SCORE  " + score,
+      "+" + (L.padBonus + L.fuelBonus), "NEXT LEVEL \u25b6");
+  } else if (lives > 0) {
+    showOverlay("SHIP LOST", crashReason + "<br>Remaining ships: " + lives + ".",
+      "SCORE  " + score + "\nLEVEL  " + level + "\nSHIPS  " + lives,
+      String(score), "RETRY LEVEL \u25b6");
+  } else {
+    state = "OVER";
+    portalStop();
+    showOverlay("GAME OVER",
+      (newBestFlag ? "New personal best! " : "") + "Best " + best + " \u00b7 Top level " + topLv + ".",
+      "FINAL SCORE  " + score + "\nBEST         " + best + "\nTOP LEVEL    " + topLv,
+      String(score), "PLAY AGAIN \u25b6");
+  }
+}
+
+/* ================= 碰撞与结算 ================= */
+function findPadAt(x) {
+  for (var i = 0; i < terrain.pads.length; i++) {
+    var p = terrain.pads[i];
+    if (x >= p.x0 && x <= p.x1) return p;
+  }
+  return null;
+}
+function crashReasonFor(lp, rp) {
+  if (!lp || !rp || lp !== rp) return "Touchdown allowed on lit pads only.";
+  if (Math.abs(ship.vy) >= 22) return "Vertical speed " + Math.abs(ship.vy).toFixed(1) + " m/s — limit is 22.";
+  if (Math.abs(ship.vx) >= 12) return "Horizontal speed " + Math.abs(ship.vx).toFixed(1) + " m/s — limit is 12.";
+  return "Tilt " + Math.abs(ship.ang).toFixed(1) + "\u00b0 — limit is 12\u00b0.";
+}
+function explode() {
+  shipDead = true;
+  for (var i = 0; i < 48; i++) {
+    var a = Math.random() * Math.PI * 2, sp = 30 + Math.random() * 200;
+    parts.push({ x: ship.x, y: ship.y, vx: Math.cos(a) * sp + ship.vx * 0.4, vy: Math.sin(a) * sp + ship.vy * 0.4,
+      life: 0.5 + Math.random() * 0.8, c: ["#ffd76a", "#ff8a3d", "#ff5533", "#aab2c5"][i & 3], s: 1.5 + Math.random() * 3 });
+  }
+  for (var k = 0; k < 7; k++) {
+    debris.push({ x: ship.x, y: ship.y, vx: (Math.random() - 0.5) * 170, vy: -50 - Math.random() * 130,
+      r: Math.random() * 6.283, vr: (Math.random() - 0.5) * 10, s: 2 + Math.random() * 3.5, life: 2.5 });
+  }
+}
+function touchdown() {
+  // 沿机身底部的双脚世界坐标（倾角投影）
+  var rad = ship.ang * Math.PI / 180, c = Math.cos(rad), sn = Math.sin(rad);
+  var lfX = ship.x - 11 * c - 14 * sn, rfX = ship.x + 11 * c - 14 * sn;
+  var lp = findPadAt(lfX), rp = findPadAt(rfX);
+  setEngine(false);
+  if (lp && rp && lp === rp && judgeLanding(ship.vy, ship.vx, ship.ang)) {
+    ship.y = lp.y - 14; ship.vx = 0; ship.vy = 0; ship.ang = 0; ship.thrusting = false;
+    var fuelBonus = Math.round(ship.fuel) * 2, padBonus = lp.mult * 500;
+    score += fuelBonus + padBonus;
+    if (score > best) { best = score; try { localStorage.setItem("ll_best", String(best)); } catch (e) {} newBestFlag = true; }
+    if (level > topLv) { topLv = level; try { localStorage.setItem("ll_top", String(topLv)); } catch (e) {} }
+    lastLand = { mult: lp.mult, padBonus: padBonus, fuelBonus: fuelBonus, fuel: ship.fuel };
+    for (var i = 0; i < 14; i++) {
+      parts.push({ x: ship.x + (Math.random() - 0.5) * 26, y: lp.y - 2, vx: (Math.random() - 0.5) * 130, vy: -Math.random() * 40,
+        life: 0.4 + Math.random() * 0.3, c: "#b9a888", s: 1 + Math.random() * 2 });
+    }
+    chime(); portalHappy();
+    settleKind = "land"; settleTimer = 1.0; settleShown = false; state = "SETTLE";
+  } else {
+    crashReason = crashReasonFor(lp, rp);
+    explode(); boom();
+    lives--;
+    settleKind = "crash"; settleTimer = 1.3; settleShown = false; state = "SETTLE";
+  }
+}
+// 机身底部多点采样（左脚/右脚/喷口/船鼻），任一点触地即结算
+function collideCheck() {
+  var rad = ship.ang * Math.PI / 180, c = Math.cos(rad), sn = Math.sin(rad);
+  var P = [[-11, 14], [11, 14], [0, 12], [0, -11]];
+  for (var i = 0; i < P.length; i++) {
+    var px = ship.x + P[i][0] * c - P[i][1] * sn;
+    var py = ship.y + P[i][0] * sn + P[i][1] * c;
+    if (py >= terrainYAt(terrain, px)) { touchdown(); return true; }
+  }
+  return false;
+}
+
+/* ================= 物理主步（内部再切子步长） ================= */
+var keys = { left: false, right: false, thrust: false };
+var touchIn = { left: false, right: false, thrust: false };
+function physics(dt) {
+  var inp = { left: keys.left || touchIn.left, right: keys.right || touchIn.right, thrust: keys.thrust || touchIn.thrust };
+  var sub = Math.max(1, Math.ceil(dt / 0.008));
+  var h = dt / sub;
+  for (var i = 0; i < sub; i++) {
+    ship = stepShip(ship, inp, h);
+    if (ship.x < 16) { ship.x = 16; if (ship.vx < 0) ship.vx = 0; }
+    if (ship.x > WORLD_W - 16) { ship.x = WORLD_W - 16; if (ship.vx > 0) ship.vx = 0; }
+    if (ship.y < 24) { ship.y = 24; if (ship.vy < 0) ship.vy = 0; }
+    if (collideCheck()) break;
+  }
+  if (!fuelWarned && ship.fuel < 120 && ship.fuel > 0) { fuelWarned = true; beep(880, 0.14, "square", 0.1); }
+  setEngine(inp.thrust && ship.fuel > 0);
+}
+
+/* ================= 特效更新 ================= */
+function updateFX(dt) {
+  var i, p;
+  for (i = parts.length - 1; i >= 0; i--) {
+    p = parts[i]; p.life -= dt;
+    if (p.life <= 0) { parts.splice(i, 1); continue; }
+    p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 90 * dt;
+  }
+  for (i = debris.length - 1; i >= 0; i--) {
+    var d = debris[i]; d.life -= dt;
+    if (d.life <= 0) { debris.splice(i, 1); continue; }
+    d.x += d.vx * dt; d.y += d.vy * dt; d.vy += 160 * dt; d.r += d.vr * dt;
+    var gy = terrainYAt(terrain, Math.max(0, Math.min(WORLD_W, d.x)));
+    if (d.y > gy) { d.y = gy; d.vy *= -0.35; d.vx *= 0.6; d.vr *= 0.5; }
+  }
+}
+
+/* ================= 相机（高空全览、低空拉近） ================= */
+function updateCamera(dt, instant) {
+  var alt = terrain ? Math.max(0, terrainYAt(terrain, ship.x) - ship.y) : 0;
+  var t = Math.max(0, Math.min(1, 1 - (alt - 50) / 650));
+  var targetS = 1 + 1.5 * t;
+  var viewW = cw / (baseScale * targetS), viewH = ch / (baseScale * targetS);
+  var tx = viewW >= WORLD_W ? WORLD_W / 2 : Math.max(viewW / 2, Math.min(WORLD_W - viewW / 2, ship.x));
+  var ty = viewH >= WORLD_H ? WORLD_H / 2 : Math.max(viewH / 2, Math.min(WORLD_H - viewH / 2, ship.y + 60));
+  var k = instant ? 1 : Math.min(1, dt * 3.5);
+  cam.x += (tx - cam.x) * k;
+  cam.y += (ty - cam.y) * k;
+  cam.s += (targetS - cam.s) * k;
+}
+
+/* ================= 渲染 ================= */
+var PAD_COL = { 2: "#58c7ff", 3: "#ffd76a", 5: "#ff8bd0" };
+function drawEarth() {
+  var ex = WORLD_W * 0.16, ey = 170;
+  ctx.fillStyle = "#2f6fbd";
+  ctx.beginPath(); ctx.arc(ex, ey, 46, 0, 6.283); ctx.fill();
+  ctx.fillStyle = "#3f9e6b";
+  ctx.beginPath(); ctx.ellipse(ex - 10, ey - 8, 18, 9, -0.5, 0, 6.283); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(ex + 12, ey + 14, 13, 7, 0.4, 0, 6.283); ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,.25)";
+  ctx.beginPath(); ctx.arc(ex - 12, ey - 14, 12, 0, 6.283); ctx.fill();
+}
+function drawShip(t) {
+  if (!ship || shipDead) return;
+  ctx.save();
+  ctx.translate(ship.x, ship.y + (state === "START" ? Math.sin(t * 1.5) * 6 : 0));
+  ctx.rotate(ship.ang * Math.PI / 180);
+  if (ship.thrusting && state === "PLAY") {
+    var fl = 16 + Math.random() * 14;
+    ctx.fillStyle = "rgba(255,138,61,.9)";
+    ctx.beginPath(); ctx.moveTo(-4, 12); ctx.lineTo(4, 12); ctx.lineTo(0, 12 + fl); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "rgba(255,225,120,.95)";
+    ctx.beginPath(); ctx.moveTo(-2, 12); ctx.lineTo(2, 12); ctx.lineTo(0, 12 + fl * 0.55); ctx.closePath(); ctx.fill();
+  }
+  ctx.strokeStyle = "#8d97ab"; ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(-6, 5); ctx.lineTo(-11, 14);
+  ctx.moveTo(6, 5); ctx.lineTo(11, 14);
+  ctx.moveTo(-14, 14); ctx.lineTo(-8, 14);
+  ctx.moveTo(8, 14); ctx.lineTo(14, 14);
+  ctx.stroke();
+  ctx.fillStyle = "#6b7385";
+  ctx.beginPath(); ctx.moveTo(-4.5, 7); ctx.lineTo(-2.5, 12); ctx.lineTo(2.5, 12); ctx.lineTo(4.5, 7); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = "#cdd6e4";
+  ctx.beginPath();
+  ctx.moveTo(-8, 7); ctx.lineTo(-8, -4);
+  ctx.quadraticCurveTo(-8, -12, 0, -12);
+  ctx.quadraticCurveTo(8, -12, 8, -4);
+  ctx.lineTo(8, 7); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = "#5d6779"; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.fillStyle = "#7fd4ff";
+  ctx.beginPath(); ctx.arc(0, -3, 3.2, 0, 6.283); ctx.fill();
+  ctx.restore();
+}
+function drawWorld(t) {
+  var i;
+  for (i = 0; i < stars.length; i++) {
+    var s = stars[i];
+    ctx.globalAlpha = 0.3 + 0.55 * Math.abs(Math.sin(t * 0.8 + s.ph));
+    ctx.fillStyle = "#dfe8ff";
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, 6.283); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  drawEarth();
+  // 地形主体
+  ctx.beginPath();
+  ctx.moveTo(terrain.pts[0].x, terrain.pts[0].y);
+  for (i = 1; i < terrain.pts.length; i++) ctx.lineTo(terrain.pts[i].x, terrain.pts[i].y);
+  ctx.lineTo(WORLD_W, WORLD_H + 400); ctx.lineTo(0, WORLD_H + 400); ctx.closePath();
+  var tg = ctx.createLinearGradient(0, 560, 0, WORLD_H + 200);
+  tg.addColorStop(0, "#3a3f52"); tg.addColorStop(1, "#181b28");
+  ctx.fillStyle = tg; ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(terrain.pts[0].x, terrain.pts[0].y);
+  for (i = 1; i < terrain.pts.length; i++) ctx.lineTo(terrain.pts[i].x, terrain.pts[i].y);
+  ctx.strokeStyle = "#7b84a0"; ctx.lineWidth = 3; ctx.stroke();
+  // 着陆区（发光平台 + 倍率标签 + 信标）
+  for (i = 0; i < terrain.pads.length; i++) {
+    var p = terrain.pads[i], col = PAD_COL[p.mult];
+    ctx.fillStyle = col;
+    ctx.fillRect(p.x0, p.y - 4, p.x1 - p.x0, 7);
+    ctx.globalAlpha = Math.sin(t * 5 + p.x0) > 0 ? 1 : 0.25;
+    ctx.beginPath(); ctx.arc(p.x0 + 4, p.y - 9, 4, 0, 6.283); ctx.fill();
+    ctx.beginPath(); ctx.arc(p.x1 - 4, p.y - 9, 4, 0, 6.283); ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.font = "800 26px 'Courier New',monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("\u00d7" + p.mult, (p.x0 + p.x1) / 2, p.y - 18);
+  }
+  // 残骸
+  for (i = 0; i < debris.length; i++) {
+    var d = debris[i];
+    ctx.save();
+    ctx.translate(d.x, d.y); ctx.rotate(d.r);
+    ctx.globalAlpha = Math.max(0, Math.min(1, d.life / 2));
+    ctx.fillStyle = "#8d97ab";
+    ctx.fillRect(-d.s, -d.s * 0.6, d.s * 2, d.s * 1.2);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+  // 粒子
+  for (i = 0; i < parts.length; i++) {
+    var q = parts[i];
+    ctx.globalAlpha = Math.max(0, Math.min(1, q.life));
+    ctx.fillStyle = q.c;
+    ctx.fillRect(q.x - q.s / 2, q.y - q.s / 2, q.s, q.s);
+  }
+  ctx.globalAlpha = 1;
+  drawShip(t);
+}
+function drawHUD(t) {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (state === "START") return;
+  ctx.font = "700 13px 'Courier New',monospace";
+  var x = 14, y = 26;
+  function row(label, val, warn) {
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#8f9ab0"; ctx.fillText(label, x, y);
+    ctx.fillStyle = warn ? (Math.floor(t * 4) % 2 ? "#ff5544" : "#8f9ab0") : "#eef2ff";
+    ctx.fillText(val, x + 52, y);
+    y += 20;
+  }
+  var alt = Math.max(0, Math.round(terrainYAt(terrain, ship.x) - ship.y - 14));
+  row("ALT", alt + " m", false);
+  row("VS", ship.vy.toFixed(1) + " m/s", ship.vy > 20);
+  row("HS", Math.abs(ship.vx).toFixed(1) + " m/s", Math.abs(ship.vx) > 10);
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#8f9ab0"; ctx.fillText("FUEL", x, y);
+  var fx = x + 52, fw = 110, fh = 10, fy = y - 9;
+  ctx.strokeStyle = "#5a6378"; ctx.strokeRect(fx, fy, fw, fh);
+  var fr = Math.max(0, Math.min(1, ship.fuel / 1000));
+  ctx.fillStyle = fr > 0.5 ? "#6fe08c" : fr > 0.2 ? "#ffd76a" : "#ff5544";
+  ctx.fillRect(fx + 1.5, fy + 1.5, (fw - 3) * fr, fh - 3);
+  ctx.fillStyle = "#eef2ff"; ctx.fillText(String(Math.round(ship.fuel)), fx + fw + 10, y);
+  // 右上任务信息 + 命数（给静音按钮留出位置）
+  var RX = cw - 104;
+  ctx.textAlign = "right";
+  ctx.fillStyle = "#eef2ff"; ctx.fillText("SCORE " + score, RX, 26);
+  ctx.fillStyle = "#8f9ab0"; ctx.fillText("BEST " + best + "  LEVEL " + level, RX, 46);
+  ctx.font = "700 12px 'Courier New',monospace";
+  ctx.fillStyle = "#8f9ab0"; ctx.fillText("SHIPS", RX, 64);
+  for (var i = 0; i < 5; i++) {
+    var lx = RX - 46 + i * 11;
+    ctx.beginPath(); ctx.moveTo(lx, 55); ctx.lineTo(lx - 5, 65); ctx.lineTo(lx + 5, 65); ctx.closePath();
+    if (i < lives) { ctx.fillStyle = "#7fd4ff"; ctx.fill(); }
+    else { ctx.strokeStyle = "#3c445c"; ctx.lineWidth = 1.5; ctx.stroke(); }
+  }
+  // 中央警告（垂直速度超阈值红色闪烁）
+  ctx.textAlign = "center";
+  ctx.font = "800 15px 'Courier New',monospace";
+  if (state === "PLAY" && ship.vy > 20 && Math.floor(t * 3) % 2) { ctx.fillStyle = "#ff5544"; ctx.fillText("SLOW DOWN", cw / 2, 30); }
+  else if (state === "PLAY" && ship.fuel <= 0) { ctx.fillStyle = "#8f9ab0"; ctx.fillText("NO FUEL — GLIDE", cw / 2, 30); }
+  else if (state === "PLAY" && ship.fuel < 120 && Math.floor(t * 2) % 2) { ctx.fillStyle = "#ffd76a"; ctx.fillText("LOW FUEL", cw / 2, 30); }
+}
+function render(t) {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  var bg = ctx.createLinearGradient(0, 0, 0, ch);
+  bg.addColorStop(0, "#05060f"); bg.addColorStop(1, "#0b0d1c");
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, cw, ch);
+  var k = baseScale * cam.s;
+  ctx.setTransform(dpr * k, 0, 0, dpr * k, dpr * (cw / 2 - cam.x * k), dpr * (ch / 2 - cam.y * k));
+  drawWorld(t);
+  drawHUD(t);
+}
+
+/* ================= 主循环 ================= */
+var lastT = 0;
+function frame(t) {
+  var dt = Math.max(0, Math.min(0.05, (t - lastT) / 1000 || 0)); // 时间戳异常（倒退）时按 0 处理
+  lastT = t;
+  // 窗口尺寸变化（或初次加载瞬时为 0）时自适应重设画布
+  if (window.innerWidth !== cw || window.innerHeight !== ch) resize();
+  if (state === "PLAY") physics(dt);
+  updateFX(dt);
+  if (state === "SETTLE" && !settleShown) { settleTimer -= dt; if (settleTimer <= 0) showSettle(); }
+  updateCamera(dt, false);
+  render(t / 1000);
+  requestAnimationFrame(frame);
+}
+
+/* ================= 输入：键盘 + 触控 ================= */
+document.addEventListener("keydown", function (e) {
+  var k = e.key;
+  if (k === "ArrowLeft" || k === "a" || k === "A") keys.left = true;
+  if (k === "ArrowRight" || k === "d" || k === "D") keys.right = true;
+  if (state === "PLAY" && (k === "ArrowUp" || k === "w" || k === "W")) { keys.thrust = true; e.preventDefault(); }
+  if (k === " " || k === "Enter") { if (state !== "PLAY") { e.preventDefault(); mainAction(); } }
+  if (k === "ArrowLeft" || k === "ArrowRight" || k === "ArrowUp" || k === "ArrowDown") e.preventDefault();
+  initAudio();
+});
+document.addEventListener("keyup", function (e) {
+  var k = e.key;
+  if (k === "ArrowLeft" || k === "a" || k === "A") keys.left = false;
+  if (k === "ArrowRight" || k === "d" || k === "D") keys.right = false;
+  if (k === "ArrowUp" || k === "w" || k === "W") keys.thrust = false;
+});
+function bindHold(id, prop) {
+  var el = document.getElementById(id);
+  el.addEventListener("touchstart", function (e) { e.preventDefault(); initAudio(); touchIn[prop] = true; el.classList.add("on"); }, { passive: false });
+  el.addEventListener("touchend", function (e) { e.preventDefault(); touchIn[prop] = false; el.classList.remove("on"); }, { passive: false });
+  el.addEventListener("touchcancel", function (e) { e.preventDefault(); touchIn[prop] = false; el.classList.remove("on"); }, { passive: false });
+  el.addEventListener("mousedown", function (e) { e.preventDefault(); initAudio(); touchIn[prop] = true; el.classList.add("on"); });
+  el.addEventListener("mouseup", function () { touchIn[prop] = false; el.classList.remove("on"); });
+  el.addEventListener("mouseleave", function () { touchIn[prop] = false; el.classList.remove("on"); });
+}
+bindHold("btnLeft", "left");
+bindHold("btnRight", "right");
+bindHold("btnThrust", "thrust");
+canvas.addEventListener("touchstart", function (e) { e.preventDefault(); initAudio(); }, { passive: false });
+canvas.addEventListener("touchmove", function (e) { e.preventDefault(); }, { passive: false });
+mainBtn.addEventListener("click", mainAction);
+muteBtn.addEventListener("click", toggleMute);
+document.addEventListener("visibilitychange", function () { if (document.hidden) setEngine(false); });
+
+/* ================= 启动 ================= */
+muteBtn.textContent = muted ? "SOUND OFF" : "SOUND ON";
+terrain = generateTerrain(1, Math.random);
+makeStars();
+ship = { x: WORLD_W * 0.5, y: 120, vx: 0, vy: 0, ang: 0, fuel: fuelForLevel(1), thrusting: false };
+updateCamera(0, true);
+showOverlay("LUNAR LANDER",
+  "Pilot the lander onto a lit pad — fuel left is score.<br>" +
+  "TOUCHDOWN LIMITS: VS &lt; 22 m/s \u00b7 HS &lt; 12 m/s \u00b7 tilt &lt; 12\u00b0<br>" +
+  "CONTROLS: \u2190 \u2192 rotate \u00b7 \u2191 / W main engine \u00b7 touch buttons on mobile",
+  "BEST  " + best + "\nTOP LEVEL  " + topLv,
+  String(best), "LAUNCH \u25b6");
+requestAnimationFrame(frame);
+
+// 调试/测试钩子（不影响游戏逻辑）
+window.__lander = {
+  get state() { return state; }, get ship() { return ship; }, get terrain() { return terrain; },
+  get score() { return score; }, get lives() { return lives; }, get level() { return level; },
+  judgeLanding: judgeLanding, generateTerrain: generateTerrain, stepShip: stepShip,
+  terrainYAt: terrainYAt, padMultAt: padMultAt
+};
+</script>
+</body>
+</html>
